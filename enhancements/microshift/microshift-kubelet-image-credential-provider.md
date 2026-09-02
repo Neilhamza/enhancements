@@ -28,7 +28,14 @@ see-also:
 
 ## Summary
 
-MicroShift runs kubelet as an embedded, in-process component. Kubelet's [image credential provider](https://kubernetes.io/docs/tasks/administer-cluster/kubelet-credential-provider/) feature (GA since Kubernetes 1.26) allows kubelet to obtain container registry credentials dynamically at image pull time by executing an external provider binary. The feature is enabled through two kubelet command-line flags, `--image-credential-provider-config` and `--image-credential-provider-bin-dir`, which have no equivalent in `KubeletConfiguration`. Because MicroShift exposes no kubelet command line and only maps its `kubelet:` configuration section into `KubeletConfiguration`, users currently have no way to enable this feature.
+MicroShift runs kubelet as an embedded, in-process component. Kubelet's
+[image credential provider](https://kubernetes.io/docs/tasks/administer-cluster/kubelet-credential-provider/)
+feature (GA since Kubernetes 1.26) allows kubelet to obtain container registry credentials
+dynamically at image pull time by executing an external provider binary. The feature is
+enabled through two kubelet command-line flags, `--image-credential-provider-config` and
+`--image-credential-provider-bin-dir`, which have no equivalent in `KubeletConfiguration`.
+Because MicroShift exposes no kubelet command line and only maps its `kubelet:` configuration
+section into `KubeletConfiguration`, users currently have no way to enable this feature.
 
 This enhancement introduces two new optional keys, `imageCredentialProviderConfigPath` and `imageCredentialProviderBinDir`, under the existing `kubelet:` section of the MicroShift configuration file. MicroShift extracts these keys, validates them at startup, and applies them to the embedded kubelet's startup flags.
 
@@ -74,7 +81,18 @@ kubelet:
   imageCredentialProviderBinDir: /usr/libexec/microshift/credential-providers
 ```
 
-The `kubelet:` section is currently a schemaless map (`map[string]any`) whose contents are marshaled verbatim into the generated `KubeletConfiguration` file. The two new keys are kubelet **flags**, not `KubeletConfiguration` fields, so they cannot follow that path: if left in the map, kubelet's strict decoder rejects them, falls back to a lenient decoder, logs a warning, and silently ignores them. MicroShift will therefore read these two keys from the map during configuration processing into typed internal fields, validate them, and set them on the `KubeletFlags` struct used to start the embedded kubelet. When the remaining `kubelet:` contents are marshaled into `KubeletConfiguration`, the two reserved keys are filtered out. The `Config.Kubelet` map itself is not modified, so `microshift show-config` continues to display the keys exactly where the user set them. All other keys in the `kubelet:` section continue to be passed through to `KubeletConfiguration` unchanged.
+The `kubelet:` section is currently a schemaless map (`map[string]any`) whose contents are
+marshaled verbatim into the generated `KubeletConfiguration` file. The two new keys are
+kubelet **flags**, not `KubeletConfiguration` fields, so they cannot follow that path: if
+left in the map, kubelet's strict decoder rejects them, falls back to a lenient decoder,
+logs a warning, and silently ignores them. MicroShift will therefore read these two keys
+from the map during configuration processing into typed internal fields, validate them,
+and set them on the `KubeletFlags` struct used to start the embedded kubelet. When the
+remaining `kubelet:` contents are marshaled into `KubeletConfiguration`, the two reserved
+keys are filtered out. The `Config.Kubelet` map itself is not modified, so
+`microshift show-config` continues to display the keys exactly where the user set them.
+All other keys in the `kubelet:` section continue to be passed through to
+`KubeletConfiguration` unchanged.
 
 ### Workflow Description
 
@@ -100,9 +118,19 @@ kubelet:
 - `imageCredentialProviderConfigPath`: path to a kubelet `CredentialProviderConfig` file (JSON or YAML), or a directory of such files which kubelet merges in lexicographical order.
 - `imageCredentialProviderBinDir`: path to the directory containing credential provider plugin binaries.
 
-Both keys must be set together; setting only one is a validation error. Values must be absolute paths. An empty string is equivalent to omitting the key. Because user configuration files and drop-ins under `/etc/microshift/config.d/` are combined with a JSON merge patch, which merges maps key by key, the two keys may be set in different files (for example, one in `config.yaml` and the other in a drop-in) and are merged before validation.
+Both keys must be set together; setting only one is a validation error. Values must be
+absolute paths. An empty string is equivalent to omitting the key. Because user
+configuration files and drop-ins under `/etc/microshift/config.d/` are combined with a
+JSON merge patch, which merges maps key by key, the two keys may be set in different
+files (for example, one in `config.yaml` and the other in a drop-in) and are merged
+before validation.
 
-The `kubelet:` section is annotated `+kubebuilder:validation:Schemaless`, so no change to the generated configuration schema or a schema version bump is required. As a consequence, the configuration generator cannot emit the keys as schema entries; they are documented through the doc comment on the `Kubelet` field, which the generator propagates into the sample configuration file and the configuration reference (see Sample configuration and documentation below).
+The `kubelet:` section is annotated `+kubebuilder:validation:Schemaless`, so no change to
+the generated configuration schema or a schema version bump is required. As a consequence,
+the configuration generator cannot emit the keys as schema entries; they are documented
+through the doc comment on the `Kubelet` field, which the generator propagates into the
+sample configuration file and the configuration reference (see Sample configuration and
+documentation below).
 
 `microshift show-config --mode effective` displays the keys under `kubelet:` as set by the user, since the underlying map is not modified.
 
@@ -297,7 +325,13 @@ The explicit log line is the intended verification point for tests and support. 
 
 #### Sample configuration and documentation
 
-`packaging/microshift/config.yaml` and `docs/user/howto_config.md` are generated by `scripts/generate-config.sh` and kept in sync by `scripts/verify/verify-config.sh`; they must not be edited by hand. Because the `kubelet:` section is schemaless, the generator cannot emit the two keys as schema entries. They are documented by extending the doc comment on the `Kubelet` field in `pkg/config/config.go` (shown above), which the generator propagates into both files. After changing the comment, run `make generate-config` and commit the regenerated files.
+`packaging/microshift/config.yaml` and `docs/user/howto_config.md` are generated by
+`scripts/generate-config.sh` and kept in sync by `scripts/verify/verify-config.sh`;
+they must not be edited by hand. Because the `kubelet:` section is schemaless, the
+generator cannot emit the two keys as schema entries. They are documented by extending
+the doc comment on the `Kubelet` field in `pkg/config/config.go` (shown above), which
+the generator propagates into both files. After changing the comment, run
+`make generate-config` and commit the regenerated files.
 
 ### Risks and Mitigations
 
@@ -318,7 +352,11 @@ The explicit log line is the intended verification point for tests and support. 
 
 ### Drawbacks
 
-Special-casing two keys inside an otherwise schemaless passthrough section introduces a small amount of hidden behavior: two keys under `kubelet:` are treated differently from all others, and the generated schema cannot express them. This is accepted because the OCPSTRAT acceptance criteria specify placement under `kubelet:`, and the alternative of a generic flag passthrough was explicitly ruled out of scope.
+Special-casing two keys inside an otherwise schemaless passthrough section introduces a
+small amount of hidden behavior: two keys under `kubelet:` are treated differently from
+all others, and the generated schema cannot express them. This is accepted because the
+OCPSTRAT acceptance criteria specify placement under `kubelet:`, and the alternative of a
+generic flag passthrough was explicitly ruled out of scope.
 
 ## Test Plan
 
@@ -378,7 +416,13 @@ N/A
 
 When upgrading from a version without support for these keys, the keys remain unset unless the user adds them, and existing behavior is preserved. If a user pre-stages the keys in the configuration file before upgrading, the older version ignores them and the newer version activates them on its first start. No migration is required; the feature holds no persisted state.
 
-When downgrading to a version without support for these keys, the older version passes them through to the `KubeletConfiguration` file, where kubelet's lenient decoder logs a warning and ignores them. MicroShift starts normally with the credential provider feature inactive. Private registry image pulls will fail on the downgraded version until the previous workaround is restored or the device is upgraded again. The configuration file on disk is not modified. This behavior depends on kubelet retaining lenient decoding for `v1beta1`, which holds for all currently supported downgrade targets.
+When downgrading to a version without support for these keys, the older version passes
+them through to the `KubeletConfiguration` file, where kubelet's lenient decoder logs a
+warning and ignores them. MicroShift starts normally with the credential provider feature
+inactive. Private registry image pulls will fail on the downgraded version until the
+previous workaround is restored or the device is upgraded again. The configuration file
+on disk is not modified. This behavior depends on kubelet retaining lenient decoding for
+`v1beta1`, which holds for all currently supported downgrade targets.
 
 ## Version Skew Strategy
 N/A
@@ -407,6 +451,11 @@ Changes to the two configuration keys require a MicroShift restart. Changes to t
 
 **Separate top-level configuration section.** Placing the keys outside `kubelet:` (e.g. `imageCredentialProvider:`) would avoid special-casing keys inside the passthrough and would be picked up by schema generation. It was rejected because the OCPSTRAT acceptance criteria and the originating RFE specify placement under `kubelet:`, where users familiar with the upstream flags will look for them.
 
-**Removing the reserved keys from the `Config.Kubelet` map.** An earlier draft extracted the two keys by deleting them from (a copy of) the map during configuration processing. This was rejected because `microshift show-config --mode effective` marshals the `Config` struct, so the keys would disappear from its output. Filtering at the point where the map is marshaled into `KubeletConfiguration` keeps the effective configuration faithful to user input.
+**Removing the reserved keys from the `Config.Kubelet` map.** An earlier draft extracted
+the two keys by deleting them from (a copy of) the map during configuration processing.
+This was rejected because `microshift show-config --mode effective` marshals the `Config`
+struct, so the keys would disappear from its output. Filtering at the point where the map
+is marshaled into `KubeletConfiguration` keeps the effective configuration faithful to
+user input.
 
 **Packaging credential provider binaries.** Shipping `ecr-credential-provider` or equivalents as MicroShift RPMs was rejected. The binaries are cloud-specific, upstream-maintained, and have their own release and CVE cadence. Bundling them would make their lifecycle a MicroShift concern.
