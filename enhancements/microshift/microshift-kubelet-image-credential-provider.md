@@ -16,7 +16,7 @@ approvers:
 api-approvers:
   - None
 creation-date: 2026-09-02
-last-updated: 2026-09-02
+last-updated: 2026-09-03
 tracking-link:
   - https://redhat.atlassian.net/browse/OCPSTRAT-3456
 see-also:
@@ -30,50 +30,87 @@ see-also:
 
 MicroShift runs kubelet as an embedded, in-process component. Kubelet's
 [image credential provider](https://kubernetes.io/docs/tasks/administer-cluster/kubelet-credential-provider/)
-feature (GA since Kubernetes 1.26) allows kubelet to obtain container registry credentials
-dynamically at image pull time by executing an external provider binary. The feature is
-enabled through two kubelet command-line flags, `--image-credential-provider-config` and
-`--image-credential-provider-bin-dir`, which have no equivalent in `KubeletConfiguration`.
-Because MicroShift exposes no kubelet command line and only maps its `kubelet:` configuration
-section into `KubeletConfiguration`, users currently have no way to enable this feature.
+feature (GA since Kubernetes 1.26) allows kubelet to obtain container registry
+credentials dynamically at image pull time by executing an external provider
+binary. The feature is enabled through two kubelet command-line flags,
+`--image-credential-provider-config` and `--image-credential-provider-bin-dir`,
+which have no equivalent in `KubeletConfiguration`. Because MicroShift exposes
+no kubelet command line and only maps its `kubelet:` configuration section into
+`KubeletConfiguration`, users currently have no way to enable this feature.
 
-This enhancement introduces two new optional keys, `imageCredentialProviderConfigPath` and `imageCredentialProviderBinDir`, under the existing `kubelet:` section of the MicroShift configuration file. MicroShift extracts these keys, validates them at startup, and applies them to the embedded kubelet's startup flags.
+This enhancement introduces two new optional keys,
+`imageCredentialProviderConfigPath` and `imageCredentialProviderBinDir`, under
+the existing `kubelet:` section of the MicroShift configuration file. MicroShift
+reads these keys, validates them at startup, and applies them to the embedded
+kubelet's startup flags.
 
 ## Motivation
 
-Edge devices frequently pull application images from private, token-based registries such as Amazon ECR, Google Artifact Registry, or Azure Container Registry. These registries do not issue long-lived passwords; Amazon ECR, for example, issues authorization tokens that expire after 12 hours.
+Edge devices frequently pull application images from private, token-based
+registries such as Amazon ECR, Google Artifact Registry, or Azure Container
+Registry. These registries do not issue long-lived passwords; Amazon ECR, for
+example, issues authorization tokens that expire after 12 hours.
 
-Today, MicroShift users work around this with a systemd timer that periodically obtains a fresh token (e.g. `aws ecr get-login-password`) and rewrites it into CRI-O's static auth file. This workaround has known drawbacks:
+Today, MicroShift users work around this with a systemd timer that periodically
+obtains a fresh token (e.g. `aws ecr get-login-password`) and rewrites it into
+CRI-O's static auth file. This workaround has known drawbacks:
 
-- **Token gap:** if the timer fires late, or the token expires early, image pulls fail until the next refresh.
-- **Operational overhead:** an additional systemd unit and script must be maintained on every device.
-- **Not portable:** each registry type (ECR, GCR, ACR) requires its own bespoke script.
+- **Token gap:** if the timer fires late, or the token expires early, image
+  pulls fail until the next refresh.
+- **Operational overhead:** an additional systemd unit and script must be
+  maintained on every device.
+- **Not portable:** each registry type (ECR, GCR, ACR) requires its own
+  bespoke script.
 
-The kubelet image credential provider is the upstream-standard, cloud-vendor-recommended solution to this problem. A customer (see the linked RFE) requires it to pull private images from Amazon ECR on MicroShift edge devices.
+The kubelet image credential provider is the upstream-standard,
+cloud-vendor-recommended solution to this problem. A customer (see the linked
+RFE) requires it to pull private images from Amazon ECR on MicroShift edge
+devices.
 
 ### User Stories
 
-1. As a MicroShift administrator, I want to enable the kubelet image credential provider through the MicroShift configuration file so that my edge devices can authenticate to private registries at pull time without direct access to kubelet command-line flags.
-2. As a MicroShift administrator with devices pulling from Amazon ECR, I want kubelet to obtain short-lived registry credentials automatically so that I no longer maintain a per-device token rotation script.
-3. As a MicroShift administrator, I want MicroShift to fail to start with a clear error if the credential provider configuration points to paths that do not exist, so that misconfigurations are caught at startup rather than surfacing as opaque image pull failures.
+1. As a MicroShift administrator, I want to enable the kubelet image credential
+   provider through the MicroShift configuration file so that my edge devices
+   can authenticate to private registries at pull time without direct access to
+   kubelet command-line flags.
+2. As a MicroShift administrator with devices pulling from Amazon ECR, I want
+   kubelet to obtain short-lived registry credentials automatically so that I
+   no longer maintain a per-device token rotation script.
+3. As a MicroShift administrator, I want MicroShift to fail to start with a
+   clear error if the credential provider configuration points to paths that do
+   not exist or are unsafe, so that misconfigurations are caught at startup
+   rather than surfacing as opaque image pull failures.
 
 ### Goals
 
-1. Allow users to set `imageCredentialProviderConfigPath` and `imageCredentialProviderBinDir` under the `kubelet:` section of the MicroShift configuration file.
+1. Allow users to set `imageCredentialProviderConfigPath` and
+   `imageCredentialProviderBinDir` under the `kubelet:` section of the
+   MicroShift configuration file.
 2. Apply these settings to the embedded kubelet as startup flags when present.
-3. Preserve current behavior when the keys are not set, ensuring full backward compatibility.
-4. Validate the provided paths at startup and fail with a clear error message if they are invalid.
+3. Preserve current behavior when the keys are not set, ensuring full backward
+   compatibility.
+4. Validate the provided paths at startup and fail with a clear error message
+   if they are invalid or unsafe.
 
 ### Non-Goals
 
-1. A generic mechanism for passing arbitrary kubelet command-line flags through the MicroShift configuration file. This enhancement special-cases exactly two keys.
-2. Packaging or distributing credential provider binaries (e.g. `ecr-credential-provider`). These are standalone upstream binaries that users install separately.
-3. Validating the contents of the credential provider configuration file or the presence and executability of binaries in the bin directory. Kubelet performs this validation itself.
-4. Runtime reconfiguration without restarting MicroShift.
+1. A generic mechanism for passing arbitrary kubelet command-line flags through
+   the MicroShift configuration file. This enhancement special-cases exactly
+   two keys.
+2. Packaging or distributing credential provider binaries (e.g.
+   `ecr-credential-provider`). These are standalone upstream binaries that
+   users install separately, and which binary is needed depends on the registry
+   in use.
+3. Validating the contents of the credential provider configuration file, or
+   the presence, executability, or permissions of individual binaries inside
+   the bin directory. Kubelet validates the configuration file and the presence
+   of each configured binary when it registers providers.
+4. Runtime reconfiguration of the two keys without restarting MicroShift.
 
 ## Proposal
 
-Introduce two new optional keys under the existing `kubelet:` section of the MicroShift configuration file:
+Introduce two new optional keys under the existing `kubelet:` section of the
+MicroShift configuration file:
 
 ```yaml
 kubelet:
@@ -81,29 +118,58 @@ kubelet:
   imageCredentialProviderBinDir: /usr/libexec/microshift/credential-providers
 ```
 
-The `kubelet:` section is currently a schemaless map (`map[string]any`) whose contents are
-marshaled verbatim into the generated `KubeletConfiguration` file. The two new keys are
-kubelet **flags**, not `KubeletConfiguration` fields, so they cannot follow that path: if
-left in the map, kubelet's strict decoder rejects them, falls back to a lenient decoder,
-logs a warning, and silently ignores them. MicroShift will therefore read these two keys
-from the map during configuration processing into typed internal fields, validate them,
-and set them on the `KubeletFlags` struct used to start the embedded kubelet. When the
-remaining `kubelet:` contents are marshaled into `KubeletConfiguration`, the two reserved
-keys are filtered out. The `Config.Kubelet` map itself is not modified, so
-`microshift show-config` continues to display the keys exactly where the user set them.
-All other keys in the `kubelet:` section continue to be passed through to
-`KubeletConfiguration` unchanged.
+This follows the same pattern as user-provided certificates, the hosts file,
+and kustomize manifests: MicroShift consumes user-supplied content at configured
+paths and does not provide the content itself. The provider binary and its
+configuration file are supplied by the user because they depend on which
+registry is in use.
+
+The `kubelet:` section is currently a schemaless map (`map[string]any`) whose
+contents are marshaled verbatim into the generated `KubeletConfiguration` file.
+The two new keys are kubelet **flags**, not `KubeletConfiguration` fields, so
+they cannot follow that path: if left in the map, kubelet's strict decoder
+rejects them, falls back to a lenient decoder, logs a warning, and silently
+ignores them. MicroShift will therefore read these two keys from the map during
+configuration processing into typed internal fields, validate them, and set
+them on the `KubeletFlags` struct used to start the embedded kubelet. When the
+remaining `kubelet:` contents are marshaled into `KubeletConfiguration`, the
+two reserved keys are filtered out. The `Config.Kubelet` map itself is not
+modified, so `microshift show-config` continues to display the keys exactly
+where the user set them. All other keys in the `kubelet:` section continue to
+be passed through to `KubeletConfiguration` unchanged.
 
 ### Workflow Description
 
-1. MicroShift starts up and loads its configuration file. The `kubelet:` section is read into `Config.Kubelet` as a schemaless map.
-2. During computed-value processing, MicroShift reads `imageCredentialProviderConfigPath` and `imageCredentialProviderBinDir` from the map into typed internal fields. The map is not modified. An empty string is treated as unset.
-3. During validation, MicroShift checks that either both keys are set or neither is, that both paths are absolute, that `imageCredentialProviderConfigPath` exists as a file or directory, and that `imageCredentialProviderBinDir` exists and is a directory.
-4. If validation fails, MicroShift exits with a descriptive error message naming the field and the path.
-5. If validation succeeds, the kubelet component sets `KubeletFlags.ImageCredentialProviderConfigPath` and `KubeletFlags.ImageCredentialProviderBinDir` before starting the embedded kubelet, and logs an informational message recording the configured values.
-6. The keys in the `kubelet:` section other than the two reserved keys are marshaled into the `KubeletConfiguration` file as today.
-7. At image pull time, kubelet consults the credential provider configuration; for images matching a configured provider, kubelet executes the provider binary, caches the returned credentials in memory for the returned or default cache duration, and passes them to CRI-O with the pull request.
-8. If the keys are not set, kubelet starts without credential provider configuration, identical to current behavior.
+1. MicroShift starts up and loads its configuration file and drop-ins. The
+   `kubelet:` section is read into `Config.Kubelet` as a schemaless map.
+2. During computed-value processing, MicroShift reads
+   `imageCredentialProviderConfigPath` and `imageCredentialProviderBinDir` from
+   the map into typed internal fields. The map is not modified. An empty string
+   or explicit `null` is treated as unset.
+3. During validation, MicroShift checks that either both keys are set or
+   neither is, that both paths are absolute, that
+   `imageCredentialProviderConfigPath` exists as a regular file or directory,
+   and that `imageCredentialProviderBinDir` exists, is a directory, is owned by
+   root, and is not writable by group or others.
+4. If validation fails, MicroShift exits with a descriptive error message
+   naming the field and the path.
+5. If validation succeeds, the kubelet component sets
+   `KubeletFlags.ImageCredentialProviderConfigPath` and
+   `KubeletFlags.ImageCredentialProviderBinDir` before starting the embedded
+   kubelet, and logs an informational message recording the configured values.
+6. The keys in the `kubelet:` section other than the two reserved keys are
+   marshaled into the `KubeletConfiguration` file as today.
+7. Kubelet reads the provider configuration file and verifies that each
+   configured provider binary exists in the bin directory. Failures here are
+   kubelet startup errors, reported in the MicroShift journal.
+8. At image pull time, kubelet consults the credential provider configuration;
+   for images matching a configured provider, kubelet executes the provider
+   binary, caches the returned credentials in memory for the returned or
+   default cache duration, and passes them to CRI-O with the pull request.
+   CRI-O uses credentials supplied by kubelet in preference to its own auth
+   files; images that match no provider use CRI-O's auth files as today.
+9. If the keys are not set, kubelet starts without credential provider
+   configuration, identical to current behavior.
 
 ### API Extensions
 
@@ -115,26 +181,34 @@ kubelet:
   imageCredentialProviderBinDir: <string>      # optional, default: not set
 ```
 
-- `imageCredentialProviderConfigPath`: path to a kubelet `CredentialProviderConfig` file (JSON or YAML), or a directory of such files which kubelet merges in lexicographical order.
-- `imageCredentialProviderBinDir`: path to the directory containing credential provider plugin binaries.
+- `imageCredentialProviderConfigPath`: absolute path to a kubelet
+  `CredentialProviderConfig` file (JSON or YAML), or a directory of such files
+  which kubelet merges in lexicographical order.
+- `imageCredentialProviderBinDir`: absolute path to the directory containing
+  credential provider plugin binaries. Must be owned by root and not writable
+  by group or others.
 
-Both keys must be set together; setting only one is a validation error. Values must be
-absolute paths. An empty string is equivalent to omitting the key. Because user
-configuration files and drop-ins under `/etc/microshift/config.d/` are combined with a
-JSON merge patch, which merges maps key by key, the two keys may be set in different
-files (for example, one in `config.yaml` and the other in a drop-in) and are merged
-before validation.
+Both keys must be set together; setting only one is a validation error. An
+empty string or explicit `null` is equivalent to omitting the key. Because user
+configuration files and drop-ins under `/etc/microshift/config.d/` are combined
+with a JSON merge patch, which merges maps key by key, the two keys may be set
+in different files (for example, one in `config.yaml` and the other in a
+drop-in) and are merged before validation. Treating `null` as unset is
+consistent with merge-patch semantics, where `null` removes a key.
 
-The `kubelet:` section is annotated `+kubebuilder:validation:Schemaless`, so no change to
-the generated configuration schema or a schema version bump is required. As a consequence,
-the configuration generator cannot emit the keys as schema entries; they are documented
-through the doc comment on the `Kubelet` field, which the generator propagates into the
-sample configuration file and the configuration reference (see Sample configuration and
-documentation below).
+The `kubelet:` section is annotated `+kubebuilder:validation:Schemaless`, so no
+change to the generated configuration schema or a schema version bump is
+required. As a consequence, the configuration generator cannot emit the keys as
+schema entries; they are documented through the doc comment on the `Kubelet`
+field, which the generator propagates into the sample configuration file and
+the configuration reference (see Sample configuration and documentation below).
 
-`microshift show-config --mode effective` displays the keys under `kubelet:` as set by the user, since the underlying map is not modified.
+`microshift show-config --mode effective` displays the keys under `kubelet:` as
+set by the user, since the underlying map is not modified.
 
-The credential provider configuration file itself follows the upstream `kubelet.config.k8s.io/v1` `CredentialProviderConfig` format. For example, for Amazon ECR:
+The credential provider configuration file itself follows the upstream
+`kubelet.config.k8s.io/v1` `CredentialProviderConfig` format. For example, for
+Amazon ECR:
 
 ```yaml
 apiVersion: kubelet.config.k8s.io/v1
@@ -165,18 +239,23 @@ N/A
 
 #### Config struct changes
 
-Add two internal, non-serialized fields to the `Config` struct in `pkg/config/config.go`. These follow the existing convention for internal fields (e.g. `userSettings`) and are populated by reading the schemaless map rather than by direct decoding. The `Kubelet` field's doc comment is extended because the configuration generator propagates it into the sample configuration and reference documentation:
+Add two internal, non-serialized fields to the `Config` struct in
+`pkg/config/config.go`, following the existing convention for internal fields
+(e.g. `userSettings`). The `Kubelet` field's doc comment is extended to
+describe the two keys, because the configuration generator propagates it into
+the sample configuration and reference documentation:
 
 ```go
-type Config struct {
-    // ... existing fields ...
-
-    // Settings specified in this section are transferred as-is into the Kubelet config,
-    // with two exceptions that are applied as kubelet startup flags instead:
-    //   imageCredentialProviderConfigPath: absolute path to a kubelet CredentialProviderConfig
-    //     file, or a directory of such files. Enables the kubelet image credential provider.
-    //   imageCredentialProviderBinDir: absolute path to the directory containing credential
-    //     provider plugin binaries. Must be set together with imageCredentialProviderConfigPath.
+    // Settings specified in this section are transferred as-is into the
+    // Kubelet config, with two exceptions that are applied as kubelet startup
+    // flags instead:
+    //   imageCredentialProviderConfigPath: absolute path to a kubelet
+    //     CredentialProviderConfig file, or a directory of such files. Enables
+    //     the kubelet image credential provider.
+    //   imageCredentialProviderBinDir: absolute path to the directory
+    //     containing credential provider plugin binaries. Must be owned by
+    //     root and not writable by group or others. Must be set together with
+    //     imageCredentialProviderConfigPath.
     // +kubebuilder:validation:Schemaless
     Kubelet map[string]any `json:"kubelet"`
 
@@ -184,217 +263,322 @@ type Config struct {
     // These are kubelet flags, not KubeletConfiguration fields.
     KubeletImageCredentialProviderConfigPath string `json:"-"`
     KubeletImageCredentialProviderBinDir     string `json:"-"`
-}
 ```
 
-Populating internal fields from the schemaless `Kubelet` map is a new pattern in the MicroShift configuration code. The map has always been passed through untouched, and this enhancement preserves that: the map is read, not modified.
+Populating internal fields from the schemaless `Kubelet` map is a new pattern
+in the MicroShift configuration code. The map has always been passed through
+untouched, and this enhancement preserves that: the map is read, not modified.
 
 #### Config extraction
 
-Extend `updateComputedValues()` in `pkg/config/config.go` to read the two keys. The map is not modified, so `incorporateUserSettings()` (which assigns `c.Kubelet = u.Kubelet`) and `microshift show-config` are unaffected:
+`updateComputedValues()` in `pkg/config/config.go` reads the two reserved keys
+into the typed fields. A present key whose value is a non-string (other than
+`null`) is an error. A helper returns the passthrough view of the map for
+kubelet:
 
 ```go
-const (
-    kubeletImageCredentialProviderConfigPathKey = "imageCredentialProviderConfigPath"
-    kubeletImageCredentialProviderBinDirKey     = "imageCredentialProviderBinDir"
-)
-
-// kubeletReservedKeys are keys under `kubelet:` that are applied as kubelet
-// startup flags rather than passed through to KubeletConfiguration.
-var kubeletReservedKeys = []string{
-    kubeletImageCredentialProviderConfigPathKey,
-    kubeletImageCredentialProviderBinDirKey,
-}
-
-func (c *Config) readKubeletCredentialProviderSettings() error {
-    for key, dst := range map[string]*string{
-        kubeletImageCredentialProviderConfigPathKey: &c.KubeletImageCredentialProviderConfigPath,
-        kubeletImageCredentialProviderBinDirKey:     &c.KubeletImageCredentialProviderBinDir,
-    } {
-        raw, ok := c.Kubelet[key]
-        if !ok || raw == nil {
-            continue
-        }
-        s, ok := raw.(string)
-        if !ok {
-            return fmt.Errorf("kubelet.%s must be a string, got %T", key, raw)
-        }
-        *dst = s
-    }
-    return nil
-}
-
 // KubeletPassthrough returns the user-provided kubelet settings that are
-// transferred into KubeletConfiguration, excluding reserved keys.
-func (c *Config) KubeletPassthrough() map[string]any {
-    if c.Kubelet == nil {
-        return nil
-    }
-    out := make(map[string]any, len(c.Kubelet))
-    for k, v := range c.Kubelet {
-        out[k] = v
-    }
-    for _, k := range kubeletReservedKeys {
-        delete(out, k)
-    }
-    return out
-}
+// transferred into KubeletConfiguration, excluding the reserved keys.
+func (c *Config) KubeletPassthrough() map[string]any
 ```
 
-`updateComputedValues()` calls `readKubeletCredentialProviderSettings()` before returning. `generateConfig()` in `pkg/node/kubelet.go` is changed to marshal `cfg.KubeletPassthrough()` instead of `cfg.Kubelet`, so the reserved keys never reach the `KubeletConfiguration` file. The list of reserved keys lives only in the `config` package.
+`generateConfig()` in `pkg/node/kubelet.go` marshals
+`cfg.KubeletPassthrough()` instead of `cfg.Kubelet`, so the reserved keys
+never reach the `KubeletConfiguration` file. The list of reserved keys lives
+only in the `config` package.
 
 #### Config validation
 
-Extend `validate()` in `pkg/config/config.go`:
+`validate()` in `pkg/config/config.go` is extended with the following rules,
+in order:
 
-```go
-func (c *Config) validateKubeletCredentialProvider() error {
-    configPath := c.KubeletImageCredentialProviderConfigPath
-    binDir := c.KubeletImageCredentialProviderBinDir
-
-    if configPath == "" && binDir == "" {
-        return nil
-    }
-    if configPath == "" || binDir == "" {
-        return fmt.Errorf("kubelet.%s and kubelet.%s must be set together",
-            kubeletImageCredentialProviderConfigPathKey, kubeletImageCredentialProviderBinDirKey)
-    }
-    if !filepath.IsAbs(configPath) {
-        return fmt.Errorf("kubelet.%s (%q) must be an absolute path",
-            kubeletImageCredentialProviderConfigPathKey, configPath)
-    }
-    if !filepath.IsAbs(binDir) {
-        return fmt.Errorf("kubelet.%s (%q) must be an absolute path",
-            kubeletImageCredentialProviderBinDirKey, binDir)
-    }
-
-    if _, err := os.Stat(configPath); err != nil {
-        return fmt.Errorf("error validating kubelet.%s (%q): file or directory does not exist: %w",
-            kubeletImageCredentialProviderConfigPathKey, configPath, err)
-    }
-
-    info, err := os.Stat(binDir)
-    if err != nil {
-        return fmt.Errorf("error validating kubelet.%s (%q): directory does not exist: %w",
-            kubeletImageCredentialProviderBinDirKey, binDir, err)
-    }
-    if !info.IsDir() {
-        return fmt.Errorf("error validating kubelet.%s (%q): not a directory",
-            kubeletImageCredentialProviderBinDirKey, binDir)
-    }
-
-    return nil
-}
-```
-
-Validation rules:
-
-- Both-or-neither: setting only one of the two keys is an error. Kubelet requires both to activate the feature; failing early in MicroShift produces a clearer message than kubelet's own error. An empty string is treated as unset.
-- Both paths must be absolute. A relative path would be resolved against the MicroShift process working directory, which is not a stable location.
-- `imageCredentialProviderConfigPath` must exist. A file or a directory is accepted, matching upstream kubelet semantics.
+- Neither key set: valid, feature inactive.
+- Exactly one key set: error. Kubelet requires both to activate the feature;
+  failing early in MicroShift produces a clearer message than kubelet's own
+  error.
+- Either path not absolute: error. A relative path would be resolved against
+  the MicroShift process working directory, which is not a stable location.
+- `imageCredentialProviderConfigPath` must exist and be a regular file or a
+  directory. Other file types (devices, sockets, FIFOs) are rejected. A
+  directory is accepted to match upstream kubelet semantics.
 - `imageCredentialProviderBinDir` must exist and be a directory.
-- Error messages name the field and the path.
+- `imageCredentialProviderBinDir` must be owned by root (uid 0) and must not
+  have group or other write permission. Credential provider binaries execute
+  with kubelet's privileges, so a directory that other users can write to is a
+  local privilege escalation vector. The check is applied to the directory
+  because directory permissions govern who can add or replace binaries; kubelet
+  resolves each binary at invocation time, so per-binary checks at startup
+  would not provide durable protection.
 
-MicroShift deliberately does **not** validate the contents of the credential provider configuration file, nor the presence or executability of binaries inside the bin directory. Kubelet validates these at startup and its errors surface in the journal. Duplicating that validation would require keeping MicroShift in sync with upstream kubelet behavior.
+Error messages name the field and the path, e.g.
+`error validating kubelet.imageCredentialProviderBinDir ("/opt/providers"): must be owned by root and not writable by group or others`.
 
-Optionally, MicroShift may emit a warning via `AddWarning()` if the bin directory is writable by users other than root, since credential provider binaries execute with kubelet's privileges. This is a warning, not a startup failure.
+MicroShift deliberately does **not** validate the contents of the credential
+provider configuration file, nor the presence or executability of individual
+binaries. Kubelet validates the configuration file and checks that each
+configured provider binary exists (`exec.LookPath`) when it registers
+providers; failures surface as kubelet startup errors in the journal.
+Duplicating that validation would require keeping MicroShift in sync with
+upstream kubelet behavior.
 
 #### Kubelet flag injection
 
-Extend `configure()` in `pkg/node/kubelet.go`. The `KubeletFlags` struct from the vendored `k8s.io/kubernetes/cmd/kubelet/app/options` package already exposes the required fields, and they are passed through to `NewMainKubelet()` by the existing in-process startup path. No new plumbing is required:
+`configure()` in `pkg/node/kubelet.go` sets the two fields on `KubeletFlags`.
+The `KubeletFlags` struct from the vendored
+`k8s.io/kubernetes/cmd/kubelet/app/options` package already exposes them, and
+the existing in-process startup path passes them through to
+`NewMainKubelet()`; no new plumbing is required:
 
 ```go
-func (s *KubeletServer) configure(cfg *config.Config) {
-    // ... existing code ...
-    kubeletFlags := kubeletoptions.NewKubeletFlags()
-    // ... existing flag assignments ...
-
     if cfg.KubeletImageCredentialProviderConfigPath != "" {
-        kubeletFlags.ImageCredentialProviderConfigPath = cfg.KubeletImageCredentialProviderConfigPath
-        kubeletFlags.ImageCredentialProviderBinDir = cfg.KubeletImageCredentialProviderBinDir
-        klog.InfoS("Kubelet image credential provider enabled",
+        kubeletFlags.ImageCredentialProviderConfigPath =
+            cfg.KubeletImageCredentialProviderConfigPath
+        kubeletFlags.ImageCredentialProviderBinDir =
+            cfg.KubeletImageCredentialProviderBinDir
+        klog.InfoS("Kubelet image credential provider configured",
             "configPath", cfg.KubeletImageCredentialProviderConfigPath,
             "binDir", cfg.KubeletImageCredentialProviderBinDir)
     }
-
-    // ... existing code ...
-}
 ```
 
-The explicit log line is the intended verification point for tests and support. Because MicroShift calls `kubelet.Run()` directly rather than through kubelet's cobra command, kubelet's usual `FLAG: --image-credential-provider-config=...` startup lines are never emitted, and kubelet's own credential provider code logs nothing at default verbosity when plugins are registered.
+The log line records that MicroShift applied the configuration to kubelet. It
+is emitted before kubelet registers providers, so it does not by itself
+indicate that the providers are usable; a missing or non-executable provider
+binary is reported by kubelet as a startup error after this line. Because
+MicroShift calls `kubelet.Run()` directly rather than through kubelet's cobra
+command, kubelet's usual `FLAG: --image-credential-provider-config=...` startup
+lines are never emitted, and kubelet's own credential provider code logs
+nothing at default verbosity on successful registration. The MicroShift log
+line is therefore the authoritative signal that the keys were applied.
 
 #### Sample configuration and documentation
 
-`packaging/microshift/config.yaml` and `docs/user/howto_config.md` are generated by
-`scripts/generate-config.sh` and kept in sync by `scripts/verify/verify-config.sh`;
-they must not be edited by hand. Because the `kubelet:` section is schemaless, the
-generator cannot emit the two keys as schema entries. They are documented by extending
-the doc comment on the `Kubelet` field in `pkg/config/config.go` (shown above), which
-the generator propagates into both files. After changing the comment, run
+`packaging/microshift/config.yaml` and `docs/user/howto_config.md` are
+generated by `scripts/generate-config.sh` and kept in sync by
+`scripts/verify/verify-config.sh`; they must not be edited by hand. Because
+the `kubelet:` section is schemaless, the generator cannot emit the two keys as
+schema entries. They are documented by extending the doc comment on the
+`Kubelet` field in `pkg/config/config.go` (shown above), which the generator
+propagates into both files. After changing the comment, run
 `make generate-config` and commit the regenerated files.
+
+#### Image-based deployments (bootc and rpm-ostree)
+
+The feature behaves identically across RPM, rpm-ostree, and bootc
+installations; the configuration and kubelet startup code paths do not branch
+on install type. What differs is how the user-supplied files reach the device.
+On image-based systems `/usr` is read-only at runtime, so the credential
+provider binary must be included in the OS image, while `/etc` content (the
+MicroShift configuration or a `/etc/microshift/config.d/` drop-in, and the
+provider configuration file) may be included in the image or written after
+deployment.
+
+- On bootc, the user adds the binary in their Containerfile, e.g.
+  `COPY --chmod=755 ecr-credential-provider /usr/libexec/microshift/credential-providers/`.
+  Because `/usr` is replaced on every image update while `/etc` persists, every
+  subsequent image must also contain the binary; otherwise startup validation
+  fails on the new image and greenboot rolls the device back to the previous
+  one.
+- On rpm-ostree systems built with Image Builder (RHEL 9 only; rpm-ostree is
+  not available on RHEL 10), blueprint file customizations cannot place content
+  under `/usr` and cannot carry binary content, so the binary must be delivered
+  as an RPM added to the blueprint. Packaging the provider binary is out of
+  scope for MicroShift (see Non-Goals); users of rpm-ostree deployments must
+  build or obtain such an RPM themselves.
+
+MicroShift component images that are embedded in an OS image are never pulled
+from a registry and do not involve the credential provider. The feature applies
+to images that are pulled at runtime, which is the normal case for application
+images on edge devices.
+
+#### Documentation requirements
+
+The following items must be covered by the end-user documentation and are
+tracked in the documentation epic OSDOCS-20657 (MicroShift-side input in
+OCPEDGE-2976):
+
+1. The two configuration keys, their semantics (both-or-neither, absolute
+   paths, file-or-directory for the config path), and the
+   `microshift show-config` behavior.
+2. A configuration guide for Amazon ECR: obtaining the upstream
+   `ecr-credential-provider` binary, placement, the
+   `CredentialProviderConfig` format with a `matchImages` example, the
+   device's AWS identity requirement, and verification steps. A note that the
+   same mechanism applies to GCR and ACR with their respective provider
+   binaries.
+3. The trust boundary: provider binaries run with kubelet's privileges; the bin
+   directory must be root-owned and not writable by group or others, and
+   MicroShift refuses to start otherwise.
+4. Image-based deployments: the binary must be present in every OS image
+   build; on rpm-ostree it must be delivered as an RPM; validation failures on
+   a new image cause greenboot rollback.
+5. `defaultCacheDuration` guidance: keep it comfortably shorter than the
+   registry token lifetime (Amazon ECR: 12 hours).
+6. Restart requirements: changes to the two keys or to the provider
+   configuration file require a MicroShift restart; replacing an existing
+   provider binary takes effect on the next uncached invocation.
+7. Rollback behavior: on a deployment without this feature, the keys are
+   ignored with a kubelet warning and private registry pulls fail until the
+   previous workaround is restored or the device is upgraded again.
 
 ### Risks and Mitigations
 
-**Risk:** A user places the keys under `kubelet:` in a MicroShift version that supports the feature, but a typo in the key name (e.g. `imageCredentialProviderConfig`) causes the key to fall through to the `KubeletConfiguration` passthrough, where kubelet's lenient decoder silently ignores it. The feature appears enabled but is inert.
-**Mitigation:** Kubelet logs a lenient-decode warning in the journal. A future improvement could warn on near-miss keys. This risk is not specific to this enhancement; it applies to any misspelled key in the passthrough.
+**Risk:** A user places the keys under `kubelet:` in a MicroShift version that
+supports the feature, but a typo in the key name (e.g.
+`imageCredentialProviderConfig`) causes the key to fall through to the
+`KubeletConfiguration` passthrough, where kubelet's lenient decoder silently
+ignores it. The feature appears enabled but is inert.
+**Mitigation:** Kubelet logs a lenient-decode warning in the journal. A future
+improvement could warn on near-miss keys. This risk is not specific to this
+enhancement; it applies to any misspelled key in the passthrough.
 
-**Risk:** Kubelet's lenient decoding of unknown `KubeletConfiguration` fields is marked upstream as temporary, to be removed when `v1beta1` support is dropped. When that happens, any unknown key left in the passthrough becomes a hard kubelet startup failure.
-**Mitigation:** This enhancement extracts its two keys in the MicroShift configuration layer before the map is marshaled, so it never depends on lenient decoding. The general passthrough exposure predates this enhancement.
+**Risk:** Kubelet's lenient decoding of unknown `KubeletConfiguration` fields
+is marked upstream as temporary, to be removed when `v1beta1` support is
+dropped. When that happens, any unknown key left in the passthrough becomes a
+hard kubelet startup failure.
+**Mitigation:** This enhancement filters its two keys out of the passthrough
+before the map is marshaled, so it never depends on lenient decoding. The
+general passthrough exposure predates this enhancement.
 
-**Risk:** Credential provider binaries execute with kubelet's (root) privileges. A bin directory writable by unprivileged users is a local privilege escalation vector.
-**Mitigation:** User documentation must state this trust boundary and recommend a root-owned bin directory that is not writable by other users. MicroShift may additionally emit a startup warning for world-writable bin directories.
+**Risk:** Credential provider binaries execute with kubelet's (root)
+privileges. A bin directory writable by unprivileged users would allow a local
+user to replace a provider binary and gain root execution during a matching
+image pull.
+**Mitigation:** MicroShift refuses to start if the bin directory is not owned
+by root or is writable by group or others (see Config validation).
+Documentation states the trust boundary. Individual binaries are not checked
+because kubelet resolves them at invocation time; the directory check is what
+durably controls who can place binaries.
 
-**Risk:** On image-based (ostree/bootc) systems, a validation failure at startup causes greenboot health checks to fail, triggering an automatic rollback to the previous deployment.
-**Mitigation:** This is the intended composition of fail-fast validation with greenboot: the device returns to a known-good state rather than remaining unhealthy. Documentation must note that the provider config file and bin directory must exist in the image before the configuration keys are enabled.
+**Risk:** On image-based (ostree/bootc) systems, a validation failure at
+startup causes greenboot health checks to fail, triggering an automatic
+rollback to the previous deployment.
+**Mitigation:** This is the intended composition of fail-fast validation with
+greenboot: the device returns to a known-good state rather than remaining
+unhealthy. Documentation notes that the provider config file and bin directory
+must exist in the image before the configuration keys are enabled.
 
-**Risk:** Users may set `defaultCacheDuration` in the provider configuration longer than the registry token lifetime, causing kubelet to serve expired credentials.
-**Mitigation:** Documentation for Amazon ECR (12-hour tokens) must recommend a cache duration comfortably shorter than the token lifetime.
+**Risk:** On image-based systems, a user rebuilds the OS image without the
+provider binary while the configuration keys persist in `/etc`. The new image
+fails startup validation and is rolled back by greenboot, which may not be
+immediately attributed to the missing binary.
+**Mitigation:** Documentation for image-based deployments states that the
+binary must be present in every image build. The validation error names the bin
+directory path, and the failure is visible in the journal of the failed boot.
+
+**Risk:** Users may set `defaultCacheDuration` in the provider configuration
+longer than the registry token lifetime, causing kubelet to serve expired
+credentials.
+**Mitigation:** Documentation for Amazon ECR (12-hour tokens) recommends a
+cache duration comfortably shorter than the token lifetime.
 
 ### Drawbacks
 
-Special-casing two keys inside an otherwise schemaless passthrough section introduces a
-small amount of hidden behavior: two keys under `kubelet:` are treated differently from
-all others, and the generated schema cannot express them. This is accepted because the
-OCPSTRAT acceptance criteria specify placement under `kubelet:`, and the alternative of a
-generic flag passthrough was explicitly ruled out of scope.
+Special-casing two keys inside an otherwise schemaless passthrough section
+introduces a small amount of hidden behavior: two keys under `kubelet:` are
+treated differently from all others, and the generated schema cannot express
+them. This is accepted because the OCPSTRAT acceptance criteria specify
+placement under `kubelet:`, and the alternative of a generic flag passthrough
+was explicitly ruled out of scope.
+
+Enforcing ownership and permissions on the bin directory goes beyond what
+upstream kubelet enforces. It may reject a small number of unusual but
+deliberate layouts. This is accepted because no legitimate layout for
+root-executed plugins should be writable by other users.
 
 ## Test Plan
 
 ### Unit Tests
 
 - Extraction: both keys present, both absent, only one present.
-- Extraction: non-string values rejected with an error.
-- Extraction: `c.Kubelet` is not modified; `KubeletPassthrough()` returns the map without the two reserved keys and with all other keys intact.
+- Extraction: non-string values rejected with an error; explicit `null`
+  treated as unset.
+- Extraction: `c.Kubelet` is not modified; `KubeletPassthrough()` returns the
+  map without the two reserved keys and with all other keys intact.
 - Extraction: empty string values are treated as unset.
 - Validation: only one key set fails with the both-or-neither error.
 - Validation: relative paths are rejected.
-- Validation: `imageCredentialProviderConfigPath` missing fails; existing file passes; existing directory passes.
-- Validation: `imageCredentialProviderBinDir` missing fails; path is a file fails; existing directory passes.
+- Validation: `imageCredentialProviderConfigPath` missing fails; existing
+  regular file passes; existing directory passes; a non-regular path (e.g. a
+  FIFO) fails.
+- Validation: `imageCredentialProviderBinDir` missing fails; path is a file
+  fails; existing directory passes.
+- Validation: `imageCredentialProviderBinDir` not owned by root fails;
+  group-writable fails; world-writable fails; root-owned `0755` passes.
 - Validation: neither key set passes (backward compatibility).
-- `generateConfig()`: the two keys never appear in the generated `KubeletConfiguration` YAML; other user-provided keys still do.
-- `configure()`: `KubeletFlags` carries both values when set, and empty values when unset.
+- `generateConfig()`: the two keys never appear in the generated
+  `KubeletConfiguration` YAML; other user-provided keys still do.
+- `configure()`: `KubeletFlags` carries both values when set, and empty values
+  when unset.
 
 ### Integration Tests (Robot Framework)
 
-- Default behavior: no keys set, MicroShift starts, the "Kubelet image credential provider enabled" log line is absent.
-- Valid configuration: both keys set to an existing file and directory via drop-in, restart, verify MicroShift starts and the journal contains the "Kubelet image credential provider enabled" log line with the configured paths.
-- `show-config`: verify `microshift show-config --mode effective` displays both keys under `kubelet:`.
-- Split configuration: one key in `config.yaml` and the other in a `/etc/microshift/config.d/` drop-in, verify the merged configuration is valid and MicroShift starts.
-- Empty strings: both keys set to `""`, verify behavior is identical to omitting them.
-- Relative path: verify MicroShift fails to start with an error naming the field.
-- Directory config path: `imageCredentialProviderConfigPath` set to a directory, verify MicroShift starts.
-- Missing config path: verify MicroShift fails to start with an error naming the field and path in the journal.
-- Missing bin directory: verify MicroShift fails to start with an error naming the field and path in the journal.
-- Only one key set: verify MicroShift fails to start with the both-or-neither error.
+- Default behavior: no keys set, MicroShift starts, the "Kubelet image
+  credential provider configured" log line is absent.
+- Valid configuration: both keys set to an existing file and directory via
+  drop-in, restart, verify MicroShift starts and the journal contains the
+  "Kubelet image credential provider configured" log line with the configured
+  paths.
+- `show-config`: verify `microshift show-config --mode effective` displays
+  both keys under `kubelet:`.
+- Split configuration: one key in `config.yaml` and the other in a
+  `/etc/microshift/config.d/` drop-in, verify the merged configuration is
+  valid and MicroShift starts.
+- Empty strings: both keys set to `""`, verify behavior is identical to
+  omitting them.
+- Relative path: verify MicroShift fails to start with an error naming the
+  field.
+- Directory config path: `imageCredentialProviderConfigPath` set to a
+  directory, verify MicroShift starts.
+- Missing config path: verify MicroShift fails to start with an error naming
+  the field and path in the journal.
+- Missing bin directory: verify MicroShift fails to start with an error naming
+  the field and path in the journal.
+- Unsafe bin directory: bin directory world-writable, verify MicroShift fails
+  to start with an error naming the field and path; restore `0755`, verify
+  MicroShift starts.
+- Only one key set: verify MicroShift fails to start with the both-or-neither
+  error.
+- Missing provider binary: valid keys, provider configuration naming a binary
+  that is not present in the bin directory, verify the "configured" log line
+  is present and kubelet reports a startup error for the missing plugin binary
+  in the journal.
 - Recovery: restore valid configuration, restart, verify MicroShift starts.
-- Downgrade: configuration with the new keys on a MicroShift version without the feature, verify MicroShift starts with a kubelet lenient-decode warning and the feature inert.
-- End-to-end pull: deploy a mock credential provider (an executable implementing the `credentialprovider.kubelet.k8s.io/v1` exec contract returning static credentials) and a local password-protected registry, deploy a pod referencing a private image with no CRI-O auth pre-populated, verify the pod reaches Running.
-- End-to-end negative: mock provider returns incorrect credentials, verify the pod reaches ImagePullBackOff.
-- Coexistence with CRI-O auth: with the credential provider configured and CRI-O auth also pre-populated for the same registry, verify the pull succeeds.
-- Mixed registries: pods referencing an image from a credential-provider registry and an image from a registry using CRI-O static auth, verify both pulls succeed independently.
-- Caching: with a short `defaultCacheDuration`, verify a second pull within the cache window does not re-invoke the provider and a pull after expiry does.
+- Rollback: on an image-based system, configuration with the new keys present
+  in `/etc`, roll back to a deployment without the feature, verify MicroShift
+  starts with a kubelet lenient-decode warning and the feature inert; roll
+  forward, verify the feature is active.
+- End-to-end pull: deploy a mock credential provider (an executable
+  implementing the `credentialprovider.kubelet.k8s.io/v1` exec contract
+  returning static credentials) and a local password-protected registry,
+  deploy a pod referencing a private image with no CRI-O auth pre-populated,
+  verify the pod reaches Running.
+- End-to-end negative: mock provider returns incorrect credentials, verify the
+  pod reaches ImagePullBackOff.
+- Coexistence with CRI-O auth: with the credential provider configured and
+  CRI-O auth also pre-populated for the same registry, verify the pull
+  succeeds.
+- Mixed registries: pods referencing an image from a credential-provider
+  registry and an image from a registry using CRI-O static auth, verify both
+  pulls succeed independently.
+- Caching: with a short `defaultCacheDuration`, verify a second pull within
+  the cache window does not re-invoke the provider and a pull after expiry
+  does.
+- Binary replacement without restart: replace the mock provider binary in
+  place, verify the next uncached invocation runs the new binary without
+  restarting MicroShift.
+- bootc: a bootc test image layer that copies the mock provider into
+  `/usr/libexec/microshift/credential-providers/` and the configuration
+  drop-in and provider configuration into `/etc/microshift/` at image build
+  time, following the existing `test/image-blueprints-bootc` layering; boot
+  the image and run the end-to-end pull scenarios above. This exercises the
+  read-only `/usr` placement that distinguishes image-based deployments from
+  RPM installs.
 
-A one-time manual validation against Amazon ECR with the upstream `ecr-credential-provider` binary is performed before release to confirm the customer's exact path and to source the configuration guide. Automated CI coverage uses the mock provider and local registry only.
+A one-time manual validation against Amazon ECR with the upstream
+`ecr-credential-provider` binary is performed before release to confirm the
+customer's exact path and to source the configuration guide. Automated CI
+coverage uses the mock provider and local registry only.
 
 ## Graduation Criteria
 
@@ -404,7 +588,8 @@ N/A
 ### Tech Preview -> GA
 
 - Ability to utilize the enhancement end to end
-- End user documentation completed and published, including a configuration guide for Amazon ECR
+- End user documentation completed and published, covering all items in
+  Documentation requirements
 - Available by default
 - End-to-end tests
 - Unit tests covering config extraction and validation
@@ -414,48 +599,119 @@ N/A
 
 ## Upgrade / Downgrade Strategy
 
-When upgrading from a version without support for these keys, the keys remain unset unless the user adds them, and existing behavior is preserved. If a user pre-stages the keys in the configuration file before upgrading, the older version ignores them and the newer version activates them on its first start. No migration is required; the feature holds no persisted state.
+When upgrading from a version without support for these keys, the keys remain
+unset unless the user adds them, and existing behavior is preserved. If a user
+pre-stages the keys in the configuration file before upgrading, the older
+version ignores them and the newer version activates them on its first start.
+No migration is required; the feature holds no persisted state.
 
-When downgrading to a version without support for these keys, the older version passes
-them through to the `KubeletConfiguration` file, where kubelet's lenient decoder logs a
-warning and ignores them. MicroShift starts normally with the credential provider feature
-inactive. Private registry image pulls will fail on the downgraded version until the
-previous workaround is restored or the device is upgraded again. The configuration file
-on disk is not modified. This behavior depends on kubelet retaining lenient decoding for
-`v1beta1`, which holds for all currently supported downgrade targets.
+MicroShift does not support downgrades. The supported scenario that boots an
+older MicroShift with a newer configuration is rollback to the previous
+deployment on image-based systems (rpm-ostree and bootc), either manually or
+automatically through greenboot. Because `/etc` persists across deployments
+while `/usr` does not, the rolled-back deployment sees the configuration keys
+but not necessarily the provider binary. In that scenario the older MicroShift
+passes the keys through to the `KubeletConfiguration` file, where kubelet's
+lenient decoder logs a warning and ignores them. MicroShift starts normally
+with the credential provider feature inactive, so the rollback itself succeeds.
+Private registry image pulls fail on the rolled-back deployment until the
+previous workaround is restored or the device is rolled forward again. The
+configuration file on disk is not modified. This behavior relies on kubelet's
+lenient decoding of `v1beta1` `KubeletConfiguration`, which is present in the
+previous deployment that a rollback targets.
 
 ## Version Skew Strategy
 N/A
 
 ## Operational Aspects of API Extensions
 
-The credential provider is invoked by kubelet only for images matching a configured `matchImages` pattern; pulls from other registries are unaffected. Credentials are held in kubelet's memory only, never written to disk, and are discarded when MicroShift restarts; the first matching pull after a restart re-invokes the provider.
+The credential provider is invoked by kubelet only for images matching a
+configured `matchImages` pattern; pulls from other registries are unaffected.
+Credentials are held in kubelet's memory only, never written to disk, and are
+discarded when MicroShift restarts; the first matching pull after a restart
+re-invokes the provider.
 
-The provider binary must be able to authenticate to the cloud provider itself (for Amazon ECR: an EC2 instance role, IAM Roles Anywhere, or static credentials in `/root/.aws/credentials`). Failures in the provider surface as image pull failures (`ImagePullBackOff`) with the provider's error in the kubelet journal.
+The provider binary must be able to authenticate to the cloud provider itself
+(for Amazon ECR: an EC2 instance role, IAM Roles Anywhere, or static
+credentials in `/root/.aws/credentials`). Failures in the provider surface as
+image pull failures (`ImagePullBackOff`) with the provider's error in the
+kubelet journal.
 
-Changes to the two configuration keys require a MicroShift restart. Changes to the provider configuration file or binaries require a MicroShift restart for kubelet to reload them.
+Changes to the two configuration keys or to the provider configuration file
+require a MicroShift restart: kubelet reads the provider configuration once
+during initialization. Replacing an existing provider binary in place does not
+require a restart, because kubelet resolves the binary path at each invocation;
+the replacement takes effect on the next invocation that is not served from the
+credential cache. Adding a new provider entry to the configuration file
+requires a restart.
+
+See Image-based deployments for the placement requirements on bootc and
+rpm-ostree.
 
 ## Support Procedures
 
-- Confirm the keys were applied: `journalctl -u microshift` at startup contains `Kubelet image credential provider enabled` with the configured `configPath` and `binDir`. Kubelet does not log `FLAG:` lines in MicroShift and logs nothing at default verbosity when providers are registered, so this MicroShift log line is the authoritative signal.
-- Confirm the effective configuration: `microshift show-config --mode effective` displays both keys under `kubelet:`.
-- Startup validation failures are logged with the field name and path, e.g. `error validating kubelet.imageCredentialProviderConfigPath ("/etc/microshift/credential-providers.yaml"): file or directory does not exist`.
-- Image pull failures with the feature active: inspect `journalctl -u microshift` for provider execution errors, verify the provider binary runs successfully when invoked manually with a `CredentialProviderRequest` on stdin, and verify the device's cloud identity has registry pull permissions.
-- A lenient-decode warning in the kubelet logs referencing either key indicates a MicroShift version that does not support the feature, or a misspelled key.
+- Confirm the keys were applied: `journalctl -u microshift` at startup
+  contains `Kubelet image credential provider configured` with the configured
+  `configPath` and `binDir`. Kubelet does not log `FLAG:` lines in MicroShift
+  and logs nothing at default verbosity on successful provider registration,
+  so this MicroShift log line is the authoritative signal that the keys
+  reached kubelet. It does not confirm that the provider binaries are usable.
+- Confirm the providers registered: the absence of a kubelet startup error
+  following the "configured" line. A missing or non-executable provider binary
+  is reported by kubelet as a startup error naming the plugin binary path.
+- Confirm the effective configuration:
+  `microshift show-config --mode effective` displays both keys under
+  `kubelet:`.
+- Startup validation failures are logged with the field name and path, e.g.
+  `error validating kubelet.imageCredentialProviderConfigPath ("/etc/microshift/credential-providers.yaml"): file or directory does not exist`
+  or
+  `error validating kubelet.imageCredentialProviderBinDir ("/opt/providers"): must be owned by root and not writable by group or others`.
+- Image pull failures with the feature active: inspect
+  `journalctl -u microshift` for provider execution errors, verify the
+  provider binary runs successfully when invoked manually with a
+  `CredentialProviderRequest` on stdin, and verify the device's cloud identity
+  has registry pull permissions.
+- A lenient-decode warning in the kubelet logs referencing either key indicates
+  a MicroShift version that does not support the feature, or a misspelled key.
+- On bootc or rpm-ostree systems, a greenboot rollback after an image update
+  with a validation error naming `imageCredentialProviderBinDir` indicates the
+  new image was built without the provider binary.
 
 ## Alternatives (Not Implemented)
 
-**Generic kubelet flag passthrough.** A `kubelet.args` or similar mechanism for arbitrary flags was rejected. It exposes the full kubelet flag surface, most of which MicroShift manages deliberately, and increases the risk of misconfiguration. The OCPSTRAT explicitly rules this out of scope; it should be tracked as a separate RFE if needed.
+**Generic kubelet flag passthrough.** A `kubelet.args` or similar mechanism for
+arbitrary flags was rejected. It exposes the full kubelet flag surface, most of
+which MicroShift manages deliberately, and increases the risk of
+misconfiguration. The OCPSTRAT explicitly rules this out of scope; it should be
+tracked as a separate RFE if needed.
 
-**Typed `kubelet:` section.** Replacing the schemaless map with a typed struct was rejected because it would break the existing passthrough of arbitrary `KubeletConfiguration` fields, which users depend on.
+**Typed `kubelet:` section.** Replacing the schemaless map with a typed struct
+was rejected because it would break the existing passthrough of arbitrary
+`KubeletConfiguration` fields, which users depend on.
 
-**Separate top-level configuration section.** Placing the keys outside `kubelet:` (e.g. `imageCredentialProvider:`) would avoid special-casing keys inside the passthrough and would be picked up by schema generation. It was rejected because the OCPSTRAT acceptance criteria and the originating RFE specify placement under `kubelet:`, where users familiar with the upstream flags will look for them.
+**Separate top-level configuration section.** Placing the keys outside
+`kubelet:` (e.g. `imageCredentialProvider:`) would avoid special-casing keys
+inside the passthrough and would be picked up by schema generation. It was
+rejected because the OCPSTRAT acceptance criteria and the originating RFE
+specify placement under `kubelet:`, where users familiar with the upstream
+flags will look for them.
 
-**Removing the reserved keys from the `Config.Kubelet` map.** An earlier draft extracted
-the two keys by deleting them from (a copy of) the map during configuration processing.
-This was rejected because `microshift show-config --mode effective` marshals the `Config`
-struct, so the keys would disappear from its output. Filtering at the point where the map
-is marshaled into `KubeletConfiguration` keeps the effective configuration faithful to
-user input.
+**Removing the reserved keys from the `Config.Kubelet` map.** An earlier draft
+extracted the two keys by deleting them from (a copy of) the map during
+configuration processing. This was rejected because
+`microshift show-config --mode effective` marshals the `Config` struct, so the
+keys would disappear from its output. Filtering at the point where the map is
+marshaled into `KubeletConfiguration` keeps the effective configuration
+faithful to user input.
 
-**Packaging credential provider binaries.** Shipping `ecr-credential-provider` or equivalents as MicroShift RPMs was rejected. The binaries are cloud-specific, upstream-maintained, and have their own release and CVE cadence. Bundling them would make their lifecycle a MicroShift concern.
+**Warning instead of failing on unsafe bin directory permissions.** An earlier
+draft only warned. A warning does not prevent a local user from replacing a
+provider binary that kubelet executes as root, so the check is a startup
+failure.
+
+**Packaging credential provider binaries.** Shipping `ecr-credential-provider`
+or equivalents as MicroShift RPMs was rejected. The binaries are
+cloud-specific, upstream-maintained, and have their own release and CVE
+cadence; there is one per registry type, so shipping any subset would favor
+particular clouds. Bundling them would make their lifecycle a MicroShift
+concern.
