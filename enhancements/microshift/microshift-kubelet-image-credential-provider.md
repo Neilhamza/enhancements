@@ -446,36 +446,27 @@ images on edge devices.
 
 #### Documentation requirements
 
-The following items must be covered by the end-user documentation and are
-tracked in the documentation epic OSDOCS-20657 (MicroShift-side input in
-OCPEDGE-2976):
+The following must be covered by the end-user documentation, tracked in
+OSDOCS-20657 (MicroShift-side input in OCPEDGE-2976):
 
-1. The two configuration keys, their semantics (both-or-neither, absolute paths,
-   file-or-directory for the config path), and the `microshift show-config`
-   behavior.
-2. A configuration guide for Amazon ECR: obtaining the upstream
+1. Configuration guide for Amazon ECR: obtaining the upstream
    `ecr-credential-provider` binary, placement, the `CredentialProviderConfig`
    format with a `matchImages` example, the device's AWS identity requirement,
-   and verification steps. A note that the same mechanism applies to GCR and ACR
-   with their respective provider binaries.
-3. The trust boundary: provider binaries run with kubelet's privileges and the
-   configuration file controls their arguments and environment; both paths,
-   their parent directories, and their contents must be root-owned and not
-   writable by group or others, and MicroShift refuses to start otherwise.
-   Recommended locations that satisfy this as installed. Kubelet is given the
-   symlink-resolved path.
-4. Image-based deployments: the binary must be present in every OS image build;
-   on rpm-ostree it must be delivered as an RPM; validation failures on a new
-   image cause greenboot rollback.
-5. `defaultCacheDuration` guidance: keep it comfortably shorter than the
-   registry token lifetime (Amazon ECR: 12 hours).
-6. Restart requirements: changes to the two keys or to the provider
-   configuration file require a MicroShift restart; replacing an existing
-   provider binary takes effect on the next uncached invocation.
-7. Upgrade and rollback: add the keys after upgrading to a version with the
-   feature. On a deployment without the feature, the keys are ignored with a
-   kubelet warning and private registry pulls fail until the previous workaround
-   is restored or the device is upgraded again.
+   the two MicroShift keys and their semantics, verification steps, and a note
+   that GCR and ACR work the same way with their own provider binaries. Include
+   that changing the keys or the provider config file requires a MicroShift
+   restart, and that keys should be added after upgrading.
+2. Trust boundary: provider binaries run with kubelet's privileges and the
+   config file controls their arguments and environment; both paths, their
+   parent directories, and their contents must be root-owned and not writable
+   by group or others, or MicroShift refuses to start. List locations that
+   satisfy this as installed.
+3. Image-based deployments: the credential provider binary must be present in
+   every OS image build (on rpm-ostree, delivered as the user's own RPM);
+   a missing binary on a new image fails validation and triggers greenboot
+   rollback — check the failed boot's journal.
+4. `defaultCacheDuration`: keep it comfortably shorter than the registry
+   token lifetime (Amazon ECR: 12 hours).
 
 ### Risks and Mitigations
 
