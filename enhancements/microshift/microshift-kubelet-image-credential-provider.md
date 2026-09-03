@@ -156,13 +156,15 @@ to `KubeletConfiguration` unchanged.
    resolves to a directory, and that both paths satisfy the trusted-path rule
    described under Config validation: after resolving symlinks, every path
    component, the final object, and every file inside a directory must be owned
-   by root and not writable by group or others.
+   by root and not writable by group or others. The canonical (symlink-resolved)
+   paths are stored in the typed fields.
 4. If validation fails, MicroShift exits with a descriptive error message naming
    the field and the path.
 5. If validation succeeds, the kubelet component sets
    `KubeletFlags.ImageCredentialProviderConfigPath` and
-   `KubeletFlags.ImageCredentialProviderBinDir` before starting the embedded
-   kubelet, and logs an informational message recording the configured values.
+   `KubeletFlags.ImageCredentialProviderBinDir` to the canonical paths before
+   starting the embedded kubelet, and logs an informational message recording
+   both the configured and the canonical values.
 6. The keys in the `kubelet:` section other than the two reserved keys are
    marshaled into the `KubeletConfiguration` file as today.
 7. Kubelet reads the provider configuration file and verifies that each
@@ -211,7 +213,8 @@ field, which the generator propagates into the sample configuration file and the
 configuration reference (see Sample configuration and documentation below).
 
 `microshift show-config --mode effective` displays the keys under `kubelet:` as
-set by the user, since the underlying map is not modified.
+set by the user, since the underlying map is not modified. Kubelet receives the
+canonical, symlink-resolved form of each path (see Config validation).
 
 The credential provider configuration file itself follows the upstream
 `kubelet.config.k8s.io/v1` `CredentialProviderConfig` format. For example, for
@@ -329,17 +332,26 @@ one rule to both paths, implemented once as a helper in the `config` package:
    parent directory from replacing the validated file or directory after
    startup.
 3. If the final object is a directory, every entry in it must satisfy the same
-   ownership and permission requirement, with symlinked entries checked at their
-   resolved target. For the bin directory this covers every provider binary; for
-   a configuration directory this covers every file kubelet will load.
+   ownership and permission requirement. A symlinked entry is resolved and the
+   full rule, including ancestors, is applied to its target, so an entry cannot
+   point into a location an unprivileged user controls.
+4. The canonical path, not the configured path, is what MicroShift passes to
+   kubelet. Validating the canonical path while handing kubelet the configured
+   path would leave a gap: a symlink under a user-writable directory could be
+   re-pointed after startup, and kubelet would follow it at invocation time.
+   Passing the canonical path removes the symlink from kubelet's view entirely;
+   every component kubelet then traverses has been verified. The components of
+   the configured path itself therefore do not need to be trusted. `validate()`
+   stores the canonical paths in the typed fields; `Config.Kubelet` retains the
+   user's values for `show-config`.
 
 Together these checks mean an unprivileged user can neither add, replace, nor
-modify anything on either path. Only root can change the ownership or
-permissions of root-owned objects, so the properties verified at startup hold
-until a privileged actor changes them, which is outside the threat model.
-Standard layouts (`/etc/microshift/...`, `/usr/libexec/...`, and their ostree
-and bootc equivalents) satisfy the rule as installed; paths under user home
-directories or `/tmp` do not.
+modify anything on either path, nor redirect kubelet to a different path. Only
+root can change the ownership or permissions of root-owned objects, so the
+properties verified at startup hold until a privileged actor changes them, which
+is outside the threat model. Standard layouts (`/etc/microshift/...`,
+`/usr/libexec/...`, and their ostree and bootc equivalents) satisfy the rule as
+installed; paths under user home directories or `/tmp` do not.
 
 Error messages name the field, the configured path, and the offending component,
 e.g. `error validating kubelet.imageCredentialProviderBinDir ("/opt/providers"):
@@ -376,10 +388,13 @@ no new plumbing is required:
     }
 ```
 
-The log line records that MicroShift applied the configuration to kubelet. It is
-emitted before kubelet registers providers, so it does not by itself indicate
-that the providers are usable; a missing or non-executable provider binary is
-reported by kubelet as a startup error after this line. Because MicroShift calls
+The typed fields hold the canonical paths produced by validation, so kubelet
+receives symlink-resolved paths. When a configured path differs from its
+canonical form, the log line additionally records the configured value. The log
+line records that MicroShift applied the configuration to kubelet. It is emitted
+before kubelet registers providers, so it does not by itself indicate that the
+providers are usable; a missing or non-executable provider binary is reported by
+kubelet as a startup error after this line. Because MicroShift calls
 `kubelet.Run()` directly rather than through kubelet's cobra command, kubelet's
 usual `FLAG: --image-credential-provider-config=...` startup lines are never
 emitted, and kubelet's own credential provider code logs nothing at default
@@ -447,7 +462,8 @@ OCPEDGE-2976):
    configuration file controls their arguments and environment; both paths,
    their parent directories, and their contents must be root-owned and not
    writable by group or others, and MicroShift refuses to start otherwise.
-   Recommended locations that satisfy this as installed.
+   Recommended locations that satisfy this as installed. Kubelet is given the
+   symlink-resolved path.
 4. Image-based deployments: the binary must be present in every OS image build;
    on rpm-ostree it must be delivered as an RPM; validation failures on a new
    image cause greenboot rollback.
@@ -493,11 +509,11 @@ users. Documentation states the trust boundary and recommends locations that
 satisfy it as installed.
 
 **Risk:** The trusted-path checks run at startup. Ownership or permissions could
-be changed afterwards.
+be changed afterwards, or a symlink in the configured path could be re-pointed.
 **Mitigation:** Only root can change the ownership or permissions of root-owned
-objects, and root is outside the threat model (see Non-Goals). The checks
-therefore remain valid until a privileged actor changes the filesystem, and they
-run again at every restart.
+objects, and root is outside the threat model (see Non-Goals). Kubelet receives
+the canonical path, so re-pointing a symlink in the configured path after
+startup has no effect. The checks run again at every restart.
 
 **Risk:** On image-based (ostree/bootc) systems, a validation failure at startup
 causes greenboot health checks to fail, triggering an automatic rollback to the
@@ -563,14 +579,15 @@ locations pass as installed.
   the bin directory fails; a writable or non-root-owned file inside a
   configuration directory fails; a directory whose entries all pass succeeds.
 - Validation, trusted path, symlinks: a symlink whose resolved target satisfies
-  the rule passes (ostree-style layout); a symlink to a writable or
-  non-root-owned target fails; a symlinked entry inside the bin directory is
-  checked at its target.
+  the rule passes (ostree-style layout) and the typed field holds the canonical
+  path; a symlink to a writable or non-root-owned target fails; a symlinked
+  entry inside the bin directory is checked at its target including the target's
+  ancestors.
 - Validation: neither key set passes (backward compatibility).
 - `generateConfig()`: the two keys never appear in the generated
   `KubeletConfiguration` YAML; other user-provided keys still do.
-- `configure()`: `KubeletFlags` carries both values when set, and empty values
-  when unset.
+- `configure()`: `KubeletFlags` carries both canonical values when set, and
+  empty values when unset.
 
 Unit tests that require non-root ownership use fake ownership through an
 injected `stat` function, since tests do not run as root and cannot `chown`.
@@ -609,6 +626,12 @@ injected `stat` function, since tests do not run as root and cannot `chown`.
   verify MicroShift starts.
 - Unsafe ancestor: bin directory placed under a world-writable parent, verify
   MicroShift fails to start with an error naming the parent.
+- Symlink re-pointing: configure the bin directory through a symlink located in
+  a user-writable directory whose target is a compliant root-owned directory;
+  verify MicroShift starts and the `configured` line shows the canonical path;
+  as the unprivileged user, re-point the symlink to a directory containing a
+  different mock provider; verify the next uncached pull still invokes the
+  original provider.
 - Only one key set: verify MicroShift fails to start with the both-or-neither
   error.
 - Missing provider binary: valid keys, provider configuration naming a binary
@@ -679,16 +702,19 @@ unset unless the user adds them, and existing behavior is preserved. The
 documented procedure is to add the keys after upgrading to a version that
 supports them. No migration is required; the feature holds no persisted state.
 
-If a user pre-stages the keys before upgrading, the older version passes them
-through to the `KubeletConfiguration` file, where kubelet's strict decoder
-rejects them and the lenient `v1beta1` fallback logs a warning and ignores them;
-the newer version then activates the keys on its first start. This holds for
-every MicroShift version that predates this feature, because all of them vendor
-a kubelet that includes the lenient fallback and those released binaries do not
-change. The upstream plan to remove the fallback affects only future kubelet
-versions, which will only ship in MicroShift versions that also include this
-feature and never pass the keys through. The upgrade test covers the Y-1 to
-feature-version transition with pre-staged keys.
+Pre-staging the keys before upgrading is tolerated but not the documented
+procedure. A pre-feature version passes the keys through to the
+`KubeletConfiguration` file, where kubelet's strict decoder rejects them and the
+lenient `v1beta1` fallback logs a warning and ignores them; the newer version
+then activates the keys on its first start. The lenient fallback is present in
+the kubelet codec of every Kubernetes version vendored by a GA MicroShift
+release (verified in the 1.25, 1.28, and 1.31 release branches; MicroShift 4.12
+vendors 1.25), and released binaries do not change. The upstream plan to remove
+the fallback affects only future kubelet versions, which ship in MicroShift
+versions that include this feature and never pass the keys through. This
+behavior is tested only for the supported Y-1 to feature-version upgrade; users
+should add the keys after upgrading unless they have verified pre-staging on
+their specific source version.
 
 MicroShift does not support downgrades. The supported scenario that boots an
 older MicroShift with a newer configuration is rollback to the previous
@@ -701,9 +727,9 @@ lenient decoder logs a warning and ignores them. MicroShift starts normally with
 the credential provider feature inactive, so the rollback itself succeeds.
 Private registry image pulls fail on the rolled-back deployment until the
 previous workaround is restored or the device is rolled forward again. The
-configuration file on disk is not modified. As above, this relies on the lenient
-fallback, which is present in every pre-feature version that a rollback can
-target.
+configuration file on disk is not modified. A rollback only ever targets the
+immediately previous deployment, which is the transition covered by the rollback
+test.
 
 ## Version Skew Strategy
 N/A
@@ -752,11 +778,10 @@ rpm-ostree.
   or
   `error validating kubelet.imageCredentialProviderBinDir ("/opt/providers"): "/opt/providers/ecr-credential-provider" must be owned by root and not writable by group or others`.
   Fix with `chown root:root` and `chmod go-w` on the named component.
-- Image pull failures with the feature active: inspect
-  `journalctl -u microshift` for provider execution errors, verify the provider
-  binary runs successfully when invoked manually with a
-  `CredentialProviderRequest` on stdin, and verify the device's cloud identity
-  has registry pull permissions.
+- Image pull failures with the feature active: inspect `journalctl -u
+  microshift` for provider execution errors, verify the provider binary runs
+  successfully when invoked manually with a `CredentialProviderRequest` on
+  stdin, and verify the device's cloud identity has registry pull permissions.
 - A lenient-decode warning in the kubelet logs referencing either key indicates
   a MicroShift version that does not support the feature, or a misspelled key.
 - On bootc or rpm-ostree systems, a greenboot rollback after an image update
@@ -801,6 +826,13 @@ prevent in-place modification of an existing writable binary, replacement of the
 directory through a writable ancestor, or modification of the configuration
 file, which controls the provider's arguments and environment. The trusted-path
 rule covers all three.
+
+**Validating the configured path's components instead of passing the canonical
+path.** Requiring every component of the configured (pre-resolution) path to be
+root-owned would also close the symlink re-pointing gap, but it would reject the
+standard ostree and bootc layouts where system directories are reached through
+symlinks under `/var`. Passing the canonical path to kubelet closes the gap
+without constraining where the user writes the configured path.
 
 **Rejecting symlinks outright.** Refusing any symlink in either path would be
 simpler than resolving and checking targets, but standard image-based layouts
